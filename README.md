@@ -31,6 +31,8 @@ id = desktop × 10 + monitor
   back in gets its windows back.
 - Hyprland starts on desktop 1. Desktop 0 sits on the 0 key, like a tenth
   desktop.
+- The bar shows desktops 1–5, then grows one empty desktop past the last one
+  with windows: put windows on 5 and 6 appears, on 6 and 7 appears.
 - Anything that switches one monitor's workspace (the bar, a notification
   focusing a window, `hyprctl`) brings the other monitors along to the same
   desktop.
@@ -60,7 +62,7 @@ can rebind anything there. Call the plugin from your own bindings with
 Requires Omarchy 4 (Hyprland 0.56+ with Lua config).
 
 ```bash
-omarchy plugin add https://github.com/OWNER/omarchy-global-workspaces.git --yes
+omarchy plugin add https://github.com/drewdunne/omarchy-global-workspaces.git --yes
 ~/.config/omarchy/plugins/gg.arkship.global-workspaces/setup install
 ```
 
@@ -113,17 +115,13 @@ bash test/setup.sh   # setup install/uninstall against a throwaway HOME
 omarchy plugin validate .
 ```
 
+After editing `GlobalWorkspaces.qml` in an installed copy, run
+`omarchy restart shell`. The shell's automatic plugin reload keeps serving the
+previously loaded component. After editing the Lua, run `hyprctl reload`.
+
 ## Credits
 
-The idea of giving each monitor its own band of workspace ids and switching
-them together comes from [@amacieli](https://github.com/amacieli)'s work in
-[omacom/omarchy#12978](https://github.com/omacom/omarchy/pull/12978) and the
-review it got. That work also mapped out the hard parts: keeping monitor
-numbers stable across hotplug, keeping workspaces alive so idle screens can
-switch, and switching the focused screen last so focus stays put. This plugin
-flips the numbering so the tens digit is the desktop, and runs entirely inside
-Hyprland's Lua config.
-
+Inspired by [omacom/omarchy#12978](https://github.com/omacom/omarchy/pull/12978).
 The bar widget is adapted from Omarchy's own workspaces widget.
 
 ## License

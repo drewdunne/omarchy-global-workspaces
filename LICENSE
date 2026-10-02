@@ -24,7 +24,3 @@ SOFTWARE.
 
 GlobalWorkspaces.qml is adapted from Omarchy's Workspaces.qml,
 Copyright (c) David Heinemeier Hansson, released under the MIT License.
-
-The per-monitor workspace design builds on work by amacieli in
-https://github.com/omacom/omarchy/pull/12978, contributed under Omarchy's
-MIT License.

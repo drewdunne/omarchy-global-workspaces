@@ -31,16 +31,17 @@ BarWidget {
     return false
   }
 
-  // Desktops 1-5 always show, like the stock widget; the rest appear when
-  // they hold windows or are focused.
+  // Desktops 1-5 always show. Past that the row grows one empty desktop
+  // beyond the last one with windows (windows on 5 reveal 6, on 6 reveal 7),
+  // and always reaches the focused desktop.
   function desktops() {
-    var ids = []
+    var count = 5
     for (var i = 0; i < desktopOrder.length; i++) {
-      var desktop = desktopOrder[i]
-      if (i < 5 || desktop === focusedDesktop || isOccupied(desktop)) ids.push(desktop)
+      if (isOccupied(desktopOrder[i])) count = Math.max(count, i + 2)
+      if (desktopOrder[i] === focusedDesktop) count = Math.max(count, i + 1)
     }
 
-    return ids
+    return desktopOrder.slice(0, Math.min(count, desktopOrder.length))
   }
 
   function switchDesktop(desktop) {

@@ -11,8 +11,7 @@
 -- Monitor numbers are remembered by output name, so unplugging and replugging
 -- a screen brings its windows back to the same place.
 --
--- Builds on the design and hotplug research by @amacieli in
--- https://github.com/omacom/omarchy/pull/12978.
+-- Inspired by https://github.com/omacom/omarchy/pull/12978.
 
 local M = {}
 GlobalWorkspaces = M
