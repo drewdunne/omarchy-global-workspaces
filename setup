@@ -1,0 +1,197 @@
+#!/bin/bash
+
+# Turn Global Workspaces on or off.
+#
+# install    load the Hyprland half from ~/.config/hypr/hyprland.lua and swap
+#            the bar widget in for omarchy.workspaces
+# uninstall  move windows back to stock workspaces 1-10, remove the loader,
+#            and restore the stock bar widget
+# status     show what is loaded
+# renumber   number the connected monitors left to right again
+
+set -euo pipefail
+
+ID="gg.arkship.global-workspaces"
+HYPR_CONFIG="$HOME/.config/hypr/hyprland.lua"
+BEGIN_MARK="-- >>> $ID >>>"
+END_MARK="-- <<< $ID <<<"
+ANCHOR='require("default.hypr.omarchy")'
+YES=0
+
+usage() {
+  cat <<USAGE
+Usage: setup <install|uninstall|status|renumber> [--yes]
+
+  install    Load Global Workspaces in Hyprland and add its bar widget
+  uninstall  Return to stock per-monitor workspaces
+  status     Show monitor numbers and the current desktop
+  renumber   Number connected monitors left to right again
+
+--yes skips confirmation prompts.
+USAGE
+}
+
+confirm() {
+  [[ $YES == 1 ]] && return 0
+  if [[ ! -t 0 ]]; then
+    echo "setup: no terminal to confirm in; pass --yes to proceed" >&2
+    exit 1
+  fi
+  read -r -p "$1 [y/N] " reply
+  [[ $reply == [yY]* ]]
+}
+
+has_block() {
+  grep -qF -- "$BEGIN_MARK" "$HYPR_CONFIG"
+}
+
+loader_block() {
+  cat <<LUA
+$BEGIN_MARK
+-- Global Workspaces: every monitor switches desktops together.
+-- Remove this block (or run the plugin's \`setup uninstall\`) to go back.
+do
+  local path = os.getenv("HOME") .. "/.config/omarchy/plugins/$ID/hypr/global-workspaces.lua"
+  local file = io.open(path, "r")
+  if file then
+    file:close()
+    dofile(path)
+  end
+end
+$END_MARK
+LUA
+}
+
+backup_config() {
+  local backup
+  backup="$HYPR_CONFIG.bak.$(date +%s)"
+  cp "$HYPR_CONFIG" "$backup"
+  echo "Backed up $HYPR_CONFIG to $backup"
+}
+
+reload_hyprland() {
+  hyprctl reload >/dev/null
+  local errors
+  errors=$(hyprctl configerrors 2>/dev/null | grep -v '^\s*$' || true)
+  if [[ -n $errors ]]; then
+    echo "Hyprland reported config errors:" >&2
+    echo "$errors" >&2
+    return 1
+  fi
+}
+
+# The shell rescans plugins asynchronously, so a freshly copied plugin can
+# take a moment to become enable-able.
+enable_widget() {
+  omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+  for _ in {1..20}; do
+    omarchy plugin enable "$ID" >/dev/null 2>&1 && return 0
+    sleep 0.25
+  done
+  echo "Could not enable the bar widget; run: omarchy plugin enable $ID" >&2
+}
+
+lua_eval() {
+  hyprctl repl "$1" 2>/dev/null
+}
+
+install() {
+  [[ -f $HYPR_CONFIG ]] || { echo "setup: $HYPR_CONFIG not found" >&2; exit 1; }
+
+  if has_block; then
+    echo "Hyprland already loads Global Workspaces."
+  else
+    echo "This adds a small loader block to $HYPR_CONFIG (after Omarchy's"
+    echo "defaults, before your own bindings) and takes over SUPER+0-9,"
+    echo "SUPER+TAB and SUPER+scroll. SUPER+SHIFT+ALT+arrows is removed."
+    confirm "Continue?" || exit 1
+
+    backup_config
+    local block tmp
+    block=$(loader_block)
+    tmp=$(mktemp)
+
+    if grep -qF -- "$ANCHOR" "$HYPR_CONFIG"; then
+      BLOCK="$block" ANCHOR="$ANCHOR" awk '
+        { print }
+        !done && index($0, ENVIRON["ANCHOR"]) { print ""; print ENVIRON["BLOCK"]; done = 1 }
+      ' "$HYPR_CONFIG" >"$tmp"
+    else
+      echo "Could not find $ANCHOR; appending the loader at the end instead."
+      { cat "$HYPR_CONFIG"; echo; echo "$block"; } >"$tmp"
+    fi
+
+    cat "$tmp" >"$HYPR_CONFIG"
+    rm -f "$tmp"
+  fi
+
+  enable_widget
+
+  if reload_hyprland; then
+    lua_eval 'if GlobalWorkspaces then GlobalWorkspaces.adopt() end' >/dev/null || true
+    echo
+    echo "Global Workspaces is on. SUPER+1..9 and SUPER+0 switch every monitor."
+    echo
+    lua_eval 'return GlobalWorkspaces and GlobalWorkspaces.status() or "not loaded"'
+  else
+    echo "Run '$0 uninstall' to undo." >&2
+    exit 1
+  fi
+}
+
+uninstall() {
+  confirm "Move windows back to workspaces 1-10 and turn Global Workspaces off?" || exit 1
+
+  lua_eval 'if GlobalWorkspaces then GlobalWorkspaces.flatten() end' >/dev/null || true
+
+  if [[ -f $HYPR_CONFIG ]] && has_block; then
+    backup_config
+    local tmp
+    tmp=$(mktemp)
+    # Drop the block and the blank line install put in front of it.
+    BEGIN_MARK="$BEGIN_MARK" END_MARK="$END_MARK" awk '
+      $0 == ENVIRON["BEGIN_MARK"] { skipping = 1; pending = 0; next }
+      skipping { if ($0 == ENVIRON["END_MARK"]) skipping = 0; next }
+      $0 == "" { if (pending) print ""; pending = 1; next }
+      { if (pending) print ""; pending = 0; print }
+      END { if (pending) print "" }
+    ' "$HYPR_CONFIG" >"$tmp"
+    cat "$tmp" >"$HYPR_CONFIG"
+    rm -f "$tmp"
+  fi
+
+  omarchy plugin disable "$ID" >/dev/null 2>&1 || true
+  reload_hyprland || true
+  echo "Global Workspaces is off; stock workspaces are back."
+}
+
+status() {
+  if [[ -f $HYPR_CONFIG ]] && has_block; then
+    echo "Loader: present in $HYPR_CONFIG"
+  else
+    echo "Loader: not installed"
+  fi
+  lua_eval 'return GlobalWorkspaces and GlobalWorkspaces.status() or "Hyprland: not loaded"'
+}
+
+renumber() {
+  lua_eval 'if GlobalWorkspaces then GlobalWorkspaces.renumber() return "Renumbered; reloading Hyprland." end return "Hyprland: not loaded"'
+}
+
+command="${1:-}"
+shift || true
+for arg in "$@"; do
+  case $arg in
+    --yes | -y) YES=1 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+
+case $command in
+  install) install ;;
+  uninstall) uninstall ;;
+  status) status ;;
+  renumber) renumber ;;
+  -h | --help | help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

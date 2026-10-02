@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "gg.arkship.global-workspaces",
+  "name": "Global Workspaces",
+  "version": "0.1.0",
+  "author": "Andrew Dunne",
+  "description": "Every monitor switches desktops together: SUPER+N moves all your screens to desktop N",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "GlobalWorkspaces.qml"
+  },
+  "barWidget": {
+    "displayName": "Global Workspaces",
+    "description": "Desktop indicators that switch every monitor together",
+    "category": "Compositor",
+    "allowMultiple": false
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.workspaces"
+  }
+}
