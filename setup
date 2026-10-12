@@ -6,6 +6,10 @@
 #            the bar widget in for omarchy.workspaces
 # uninstall  move windows back to stock workspaces 1-10, remove the loader,
 #            and restore the stock bar widget
+# off        move windows back to stock workspaces 1-10 and pause, keeping
+#            everything installed (the bar widget shows plain workspaces)
+# on         undo off: each window takes the desktop of its stock workspace
+#            on the screen it is on
 # status     show what is loaded
 # renumber   number the connected monitors left to right again
 
@@ -16,18 +20,25 @@ HYPR_CONFIG="$HOME/.config/hypr/hyprland.lua"
 BEGIN_MARK="-- >>> $ID >>>"
 END_MARK="-- <<< $ID <<<"
 ANCHOR='require("default.hypr.omarchy")'
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/global-workspaces"
+OFF_FILE="$STATE_DIR/off"
+RESUME_FILE="$STATE_DIR/resume"
 YES=0
+ONTO=""
 
 usage() {
   cat <<USAGE
-Usage: setup <install|uninstall|status|renumber> [--yes]
+Usage: setup <install|uninstall|off|on|status|renumber> [--yes]
 
   install    Load Global Workspaces in Hyprland and add its bar widget
   uninstall  Return to stock per-monitor workspaces
+  off        Pause: stock workspaces until 'on', nothing uninstalled
+  on         Switch back on after 'off'
   status     Show monitor numbers and the current desktop
   renumber   Number connected monitors left to right again
 
 --yes skips confirmation prompts.
+--onto MONITOR (with off) gathers the stock workspaces onto that monitor.
 USAGE
 }
 
@@ -126,6 +137,7 @@ install() {
   fi
 
   enable_widget
+  rm -f "$OFF_FILE" "$RESUME_FILE"
 
   if reload_hyprland; then
     lua_eval 'if GlobalWorkspaces then GlobalWorkspaces.adopt() end' >/dev/null || true
@@ -161,8 +173,51 @@ uninstall() {
   fi
 
   omarchy plugin disable "$ID" >/dev/null 2>&1 || true
+  rm -f "$OFF_FILE" "$RESUME_FILE"
   reload_hyprland || true
   echo "Global Workspaces is off; stock workspaces are back."
+}
+
+off() {
+  if [[ -f $OFF_FILE ]]; then
+    echo "Global Workspaces is already off."
+    return
+  fi
+  local onto="nil"
+  [[ -n $ONTO ]] && onto="\"${ONTO//[^A-Za-z0-9_.-]/}\""
+  lua_eval "if GlobalWorkspaces then GlobalWorkspaces.flatten($onto) end" >/dev/null || true
+  mkdir -p "$STATE_DIR"
+  rm -f "$RESUME_FILE"
+  : >"$OFF_FILE"
+  reload_hyprland || true
+  echo "Global Workspaces is off; stock workspaces until '$0 on'."
+}
+
+on() {
+  if [[ ! -f $OFF_FILE ]]; then
+    echo "Global Workspaces is not switched off."
+    return
+  fi
+  mkdir -p "$STATE_DIR"
+  # Which screen each window is on, and the workspace in front, before the
+  # reload: the plugin's workspace rules can move stock workspaces around.
+  local path=${RESUME_FILE//\\/\\\\}
+  path=${path//\"/\\\"}
+  : >"$RESUME_FILE"
+  lua_eval "local f = io.open(\"$path\", \"w\") if f then
+    local active = hl.get_active_workspace()
+    if active then f:write(\"showing \", active.id, \"\\n\") end
+    for _, w in ipairs(hl.get_windows()) do
+      if w.monitor then f:write(w.address, \" \", w.monitor.name, \"\\n\") end
+    end
+    f:close() end" >/dev/null || true
+  rm -f "$OFF_FILE"
+  if ! has_block; then
+    echo "Switched on, but Hyprland does not load Global Workspaces; run '$0 install'." >&2
+    exit 1
+  fi
+  reload_hyprland || true
+  echo "Global Workspaces is on."
 }
 
 status() {
@@ -171,6 +226,7 @@ status() {
   else
     echo "Loader: not installed"
   fi
+  [[ -f $OFF_FILE ]] && echo "Switched off ($OFF_FILE); '$0 on' switches it back on."
   lua_eval 'return GlobalWorkspaces and GlobalWorkspaces.status() or "Hyprland: not loaded"'
 }
 
@@ -180,16 +236,20 @@ renumber() {
 
 command="${1:-}"
 shift || true
-for arg in "$@"; do
-  case $arg in
+while (( $# > 0 )); do
+  case $1 in
     --yes | -y) YES=1 ;;
+    --onto) ONTO=${2:-}; [[ -n $ONTO ]] || { usage >&2; exit 1; }; shift ;;
     *) usage >&2; exit 1 ;;
   esac
+  shift
 done
 
 case $command in
   install) install ;;
   uninstall) uninstall ;;
+  off) off ;;
+  on) on ;;
   status) status ;;
   renumber) renumber ;;
   -h | --help | help) usage ;;

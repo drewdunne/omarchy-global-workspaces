@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "gg.arkship.global-workspaces",
   "name": "Global Workspaces",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Andrew Dunne",
   "description": "Every monitor switches desktops together: SUPER+N moves all your screens to desktop N",
   "kinds": [

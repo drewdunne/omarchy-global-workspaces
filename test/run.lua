@@ -37,6 +37,7 @@ local function fake_hyprland()
     binds = {},
     rules = {},
     execs = {},
+    timers = {},
     set_workspace_calls = {},
     focused = nil,
     active_window = nil,
@@ -79,8 +80,8 @@ local function fake_hyprland()
     end
   end
 
-  function env.add_monitor(name, x, y, workspace_id)
-    local monitor = { name = name, x = x, y = y, is_mirror = false }
+  function env.add_monitor(name, x, y, workspace_id, description)
+    local monitor = { name = name, x = x, y = y, is_mirror = false, description = description }
     function monitor:set_workspace(spec)
       env.set_workspace_calls[#env.set_workspace_calls + 1] = self.name
       local workspace = env.workspaces[tonumber(spec.workspace)]
@@ -235,6 +236,7 @@ local function fake_hyprland()
     end,
     unbind = function(keys) env.binds[keys] = nil end,
     exec_cmd = function(command) env.execs[#env.execs + 1] = command end,
+    timer = function(callback) env.timers[#env.timers + 1] = callback end,
   }
 
   return env, api
@@ -645,6 +647,196 @@ test("loads under omarchy-menu-keybindings' stub without touching live state", f
   for key in pairs(touched) do
     check(key == "unbind" or key == "version", "touched hl." .. key .. " outside a live session")
   end
+end)
+
+local function write_file(path, content)
+  os.execute("mkdir -p '" .. path:match("^(.*)/") .. "'")
+  local file = assert(io.open(path, "w"))
+  file:write(content)
+  file:close()
+end
+
+test("switched off, it loads nothing and leaves stock bindings alone", function()
+  write_file(state_home .. "/omarchy/global-workspaces/off", "")
+  local env, api = fake_hyprland()
+  desk(env)
+  env.binds["SUPER + code:10"] = { description = "Switch to workspace 1" }
+  GlobalWorkspaces = "left over"
+  local M = load_module(api)
+
+  check(M == nil, "the module returns nothing")
+  check(GlobalWorkspaces == nil, "GlobalWorkspaces is cleared, so the widget falls back")
+  check(env.binds["SUPER + code:10"].description == "Switch to workspace 1", "stock SUPER+1 kept")
+  check(next(env.handlers) == nil, "no event handlers")
+  check(#env.rules == 0, "no workspace rules")
+end)
+
+test("flatten lands the focused monitor on the stock workspace of its desktop", function()
+  local env, api = fake_hyprland()
+  desk(env)
+  local M = load_module(api)
+  env.emit("config.reloaded")
+  M.switch(3)
+  env.open_window("a", 32)
+
+  M.flatten()
+  check(env.focused.active_workspace.id == 3, "showing workspace 3, got " .. env.focused.active_workspace.id)
+end)
+
+test("switching back on keeps windows on their screens and the desktop you were on", function()
+  local env, api = fake_hyprland()
+  desk(env)
+  -- Numbers from an earlier session: left 1, center 2, right 3.
+  write_file(state_home .. "/omarchy/global-workspaces/monitors", "DP-1=3\nDP-2=1\nHDMI-A-1=2\n")
+  write_file(state_home .. "/omarchy/global-workspaces/resume", "")
+  -- Stock workspaces as Hyprland left them: 3 is on the left screen, 5 on the right.
+  env.workspaces[3].monitor = env.monitors[3]
+  env.monitors[3].active_workspace = env.workspaces[3]
+  local left = env.open_window("left", 3)
+  env.workspaces[5] = nil
+  local right = env.open_window("right", 5)
+  right.workspace.monitor = env.monitors[2]
+  right.monitor = env.monitors[2]
+  env.focus("DP-2")
+
+  local M = load_module(api)
+  env.emit("config.reloaded")
+  check(left.workspace.id == 31, "left window is on desktop 3, left screen; got " .. left.workspace.id)
+  check(left.monitor.name == "DP-2", "and still on the left screen")
+  check(right.workspace.id == 53, "right window is on desktop 5, right screen; got " .. right.workspace.id)
+  check(M.current() == 3, "on desktop 3, got " .. M.current())
+  check(read_file(state_home .. "/omarchy/global-workspaces/resume") == nil, "resume is done once")
+end)
+
+test("screens are remembered by description, whatever output name they get", function()
+  local env, api = fake_hyprland()
+  env.add_monitor("eDP-1", 0, 0, 1, "Panel 1")
+  env.add_monitor("DP-5", 1536, 0, 2, "Monitor A")
+  env.add_monitor("DP-6", 3000, 0, 3, "Monitor B")
+  load_module(api)
+  env.emit("config.reloaded")
+
+  local env2, api2 = fake_hyprland()
+  env2.add_monitor("eDP-1", 0, 0, 1, "Panel 1")
+  env2.add_monitor("DP-2", 1536, 0, 2, "Monitor B") -- swapped output names
+  env2.add_monitor("DP-3", 3000, 0, 3, "Monitor A")
+  local M = load_module(api2)
+  env2.emit("config.reloaded")
+
+  check(M.number(env2.monitors[2]) == 3, "Monitor B keeps 3")
+  check(M.number(env2.monitors[3]) == 2, "Monitor A keeps 2")
+  local saved = read_file(state_home .. "/omarchy/global-workspaces/monitors")
+  check(saved == "Monitor A=2\nMonitor B=3\nPanel 1=1\n", "state file was " .. tostring(saved))
+end)
+
+test("numbers saved by output name carry over to descriptions", function()
+  write_file(state_home .. "/omarchy/global-workspaces/monitors", "DP-1=3\nDP-2=1\nHDMI-A-1=2\n")
+  local env, api = fake_hyprland()
+  env.add_monitor("HDMI-A-1", 2160, 840, 1, "Center")
+  env.add_monitor("DP-1", 6000, 0, 2, "Right")
+  env.add_monitor("DP-2", 0, 0, 3, "Left")
+  local M = load_module(api)
+  env.emit("config.reloaded")
+
+  check(M.number(env.monitors[1]) == 2 and M.number(env.monitors[2]) == 3 and M.number(env.monitors[3]) == 1,
+    "same numbers as before")
+  local saved = read_file(state_home .. "/omarchy/global-workspaces/monitors")
+  check(saved == "Center=2\nLeft=1\nRight=3\n", "state file was " .. tostring(saved))
+end)
+
+test("two identical screens without serials are told apart by output name", function()
+  local env, api = fake_hyprland()
+  env.add_monitor("DP-1", 0, 0, 1, "Same Model")
+  env.add_monitor("DP-2", 1920, 0, 2, "Same Model")
+  local M = load_module(api)
+  env.emit("config.reloaded")
+
+  check(M.number(env.monitors[1]) == 1 and M.number(env.monitors[2]) == 2, "numbered 1 and 2")
+  local saved = read_file(state_home .. "/omarchy/global-workspaces/monitors")
+  check(saved == "DP-1=1\nDP-2=2\n", "state file was " .. tostring(saved))
+end)
+
+test("flatten moves a group once, to its own desktop", function()
+  local env, api = fake_hyprland()
+  desk(env)
+  local M = load_module(api)
+  env.emit("config.reloaded")
+  local a = env.open_window("a", 31)
+  local b = env.open_window("b", 31)
+  -- Hyprland moves a whole group when one of its windows moves.
+  local group = { a, b }
+  a.group, b.group = group, group
+  local real_move = hl.dsp.window.move
+  hl.dsp.window.move = function(args)
+    return function()
+      for _, member in ipairs(args.window and args.window.group or {}) do
+        if member ~= args.window then real_move({ window = member, workspace = args.workspace, follow = false })() end
+      end
+      real_move(args)()
+    end
+  end
+
+  M.flatten()
+  hl.dsp.window.move = real_move
+  check(a.workspace.id == 3 and b.workspace.id == 3, "group on workspace 3, got " .. a.workspace.id .. " and " .. b.workspace.id)
+end)
+
+test("flatten onto a monitor gathers the stock workspaces there", function()
+  local env, api = fake_hyprland()
+  desk(env)
+  local M = load_module(api)
+  env.emit("config.reloaded")
+  env.focus("DP-2")
+  M.switch(3)
+  local a = env.open_window("a", 33) -- desktop 3, right screen
+  local b = env.open_window("b", 31) -- desktop 3, left screen
+
+  M.flatten("DP-2")
+  check(a.workspace.id == 3 and b.workspace.id == 3, "both on workspace 3")
+  check(a.workspace.monitor.name == "DP-2", "workspace 3 is on the left screen, got " .. a.workspace.monitor.name)
+end)
+
+test("unplugging a screen keeps every other screen on the same desktop", function()
+  local env, api = fake_hyprland()
+  desk(env)
+  local M = load_module(api)
+  env.emit("config.reloaded")
+  M.switch(3)
+
+  -- While unplugging, Hyprland shows each of the right screen's workspaces
+  -- on it, then parks some on the others.
+  local right = env.monitors[2]
+  for _, id in ipairs({ 43, 53, 93 }) do
+    right.active_workspace = env.workspaces[id]
+    env.emit("workspace.active", env.workspaces[id])
+  end
+  local parked = env.workspaces[3]
+  parked.monitor = env.monitors[1]
+  env.monitors[1].active_workspace = parked
+  env.emit("workspace.active", parked)
+  env.remove_monitor(right.name)
+
+  check(M.current() == 3, "still on desktop 3, got " .. M.current())
+  same(env.showing(), { ["DP-2"] = 31, ["HDMI-A-1"] = 32 }, "both screens on desktop 3")
+end)
+
+test("switching back on uses the screens written down before the reload", function()
+  local env, api = fake_hyprland()
+  desk(env)
+  write_file(state_home .. "/omarchy/global-workspaces/monitors", "DP-1=3\nDP-2=1\nHDMI-A-1=2\n")
+  -- Before the reload: workspace 3, with this window, was on the left screen
+  -- and in front. Reloading put it on screen 3, the right one.
+  write_file(state_home .. "/omarchy/global-workspaces/resume", "showing 3\n0xabc DP-2\n")
+  local window = env.open_window("left", 3)
+  window.address = "0xabc"
+  env.workspaces[3].monitor = env.monitors[2]
+  window.monitor = env.monitors[2]
+  env.focus("DP-2")
+
+  local M = load_module(api)
+  env.emit("config.reloaded")
+  check(window.workspace.id == 31, "back on desktop 3, left screen; got " .. window.workspace.id)
+  check(M.current() == 3, "on desktop 3, got " .. M.current())
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

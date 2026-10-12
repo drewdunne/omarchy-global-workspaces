@@ -27,8 +27,10 @@ id = desktop × 10 + monitor
 - The tens digit is always the desktop and the ones digit is always the monitor,
   so workspace 23 is desktop 2 on the third screen.
 - Monitors are numbered left to right the first time they are seen, up to nine.
-  The numbers are remembered by output name, so a screen you unplug and plug
-  back in gets its windows back.
+  The numbers are remembered by each screen's make, model and serial, so a
+  screen you unplug and plug back in gets its windows back, even when a dock
+  hands it a different output name. (Two identical screens without serial
+  numbers are told apart by output name instead.)
 - Hyprland starts on desktop 1. Desktop 0 sits on the 0 key, like a tenth
   desktop.
 - The bar shows desktops 1–5, then grows one empty desktop past the last one
@@ -78,6 +80,25 @@ omarchy plugin add https://github.com/drewdunne/omarchy-global-workspaces.git --
 On the first run your existing workspaces move to the monitors their numbers
 belong to, so windows may change screens once.
 
+## Switching off for a while
+
+```bash
+~/.config/omarchy/plugins/gg.arkship.global-workspaces/setup off
+~/.config/omarchy/plugins/gg.arkship.global-workspaces/setup on
+```
+
+`setup off` moves every window back to stock workspaces (desktop N becomes
+workspace N, desktop 0 becomes workspace 10) and leaves Omarchy's own
+workspaces and keys in charge, without uninstalling anything: the bar widget
+stays and shows plain workspaces 1–10, like Omarchy's own. Add
+`--onto <monitor>` to gather those workspaces onto one screen. `setup on`
+brings Global Workspaces back: a window on stock workspace N goes to desktop
+N on the screen it is on.
+
+Scripts can use this, for example to run Global Workspaces only while a laptop
+is docked. Off is a file, `~/.local/state/omarchy/global-workspaces/off`; while
+it exists, the Hyprland half does nothing.
+
 ## Uninstall
 
 ```bash
@@ -92,7 +113,7 @@ and puts the stock widget back.
 ## Other commands
 
 ```bash
-setup status    # monitor numbers and the current desktop
+setup status    # monitor numbers, the current desktop, and whether it is off
 setup renumber  # number monitors left to right again, e.g. after rearranging them
 ```
 

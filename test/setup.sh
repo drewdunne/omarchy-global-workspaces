@@ -10,6 +10,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 export HOME="$WORK/home"
+export XDG_STATE_HOME="$HOME/.local/state"
 mkdir -p "$HOME/.config/hypr" "$WORK/bin"
 
 # Stub commands record how they were called.
@@ -77,6 +78,33 @@ check "installing twice does not duplicate the block" \
 check "uninstall restores hyprland.lua exactly" cmp -s "$CONFIG" "$WORK/original.lua"
 check "uninstall flattens windows before unloading" grep -q "GlobalWorkspaces.flatten" "$WORK/calls"
 check "uninstall restores the stock bar widget" grep -q "omarchy plugin disable gg.arkship.global-workspaces" "$WORK/calls"
+
+STATE="$HOME/.local/state/omarchy/global-workspaces"
+"$ROOT/setup" install --yes >/dev/null
+: >"$WORK/calls"
+"$ROOT/setup" off >/dev/null
+check "off flattens windows first" grep -q "GlobalWorkspaces.flatten" "$WORK/calls"
+check "off leaves the off file" test -f "$STATE/off"
+check "off reloads Hyprland" grep -q "hyprctl reload" "$WORK/calls"
+check "off keeps the loader" grep -qF -- '-- >>> gg.arkship.global-workspaces >>>' "$CONFIG"
+check "off keeps the bar widget" bash -c '! grep -q "plugin disable" "$0"' "$WORK/calls"
+check "status says it is off" bash -c '"$0" status | grep -q "Switched off"' "$ROOT/setup"
+
+: >"$WORK/calls"
+"$ROOT/setup" on >/dev/null
+check "on removes the off file" test ! -f "$STATE/off"
+check "on asks the plugin to give stock workspaces their desktops" test -f "$STATE/resume"
+check "on reloads Hyprland" grep -q "hyprctl reload" "$WORK/calls"
+
+: >"$WORK/calls"
+"$ROOT/setup" off --onto eDP-1 >/dev/null
+check "off --onto gathers onto that monitor" grep -qF 'GlobalWorkspaces.flatten("eDP-1")' "$WORK/calls"
+"$ROOT/setup" on >/dev/null
+
+"$ROOT/setup" off >/dev/null
+"$ROOT/setup" uninstall --yes >/dev/null
+check "uninstall clears the off switch" test ! -f "$STATE/off"
+cp "$WORK/original.lua" "$CONFIG"
 
 check "install refuses to edit config without a terminal or --yes" \
   bash -c '! "$0" install </dev/null >/dev/null 2>&1' "$ROOT/setup"

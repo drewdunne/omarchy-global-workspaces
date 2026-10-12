@@ -8,8 +8,12 @@
 -- left to right the first time they are seen, so workspace 23 is desktop 2 on
 -- the third monitor, and desktop 0 is plain workspaces 1-9.
 --
--- Monitor numbers are remembered by output name, so unplugging and replugging
--- a screen brings its windows back to the same place.
+-- Monitor numbers are remembered by each screen's make, model and serial (its
+-- description), so unplugging and replugging a screen brings its windows back
+-- to the same place, whichever port or output name it comes back on.
+--
+-- `setup off` writes an "off" file next to that record; while it is there this
+-- file does nothing and Hyprland's own workspaces are back.
 --
 -- Inspired by https://github.com/omacom/omarchy/pull/12978.
 
@@ -23,6 +27,20 @@ local HOME_DESKTOP = 1
 local state_home = os.getenv("XDG_STATE_HOME") or ((os.getenv("HOME") or "") .. "/.local/state")
 local STATE_DIR = state_home .. "/omarchy/global-workspaces"
 local STATE_FILE = STATE_DIR .. "/monitors"
+local OFF_FILE = STATE_DIR .. "/off"       -- written by `setup off`
+local RESUME_FILE = STATE_DIR .. "/resume" -- written by `setup on`
+
+local function exists(path)
+  local file = io.open(path, "r")
+  if file then file:close() end
+  return file ~= nil
+end
+
+-- Switched off: leave Hyprland's own workspaces and bindings alone.
+if exists(OFF_FILE) then
+  GlobalWorkspaces = nil
+  return nil
+end
 
 -- omarchy-menu-keybindings evaluates the Hyprland config against a stub `hl`
 -- whose every field is a callable table, just to collect bind descriptions.
@@ -30,7 +48,7 @@ local STATE_FILE = STATE_DIR .. "/monitors"
 -- real API is present.
 local LIVE = type(hl) == "table" and type(hl.version) == "function"
 
-local digits = {}        -- monitor name -> 1..9
+local digits = {}        -- monitor key (see key_of) -> 1..9
 local rules = {}         -- monitor name -> workspace rule handles
 local busy = false       -- true while we are switching monitors ourselves
 local current_desktop = nil
@@ -92,6 +110,35 @@ local function save_digits()
   os.rename(tmp, STATE_FILE)
 end
 
+-- Screens are remembered by description (make, model, serial), which stays
+-- the same when a dock hands out different output names. A screen without
+-- one, or two identical screens without serials, fall back to output names.
+local shared_descriptions = {}
+
+local function note_descriptions(monitors)
+  local seen = {}
+  shared_descriptions = {}
+  for _, monitor in ipairs(monitors) do
+    local description = monitor.description
+    if description then
+      if seen[description] then shared_descriptions[description] = true end
+      seen[description] = true
+    end
+  end
+end
+
+local function key_of(monitor)
+  local description = monitor and monitor.description
+  if type(description) == "string" and description ~= "" and not shared_descriptions[description] then
+    return description
+  end
+  return monitor and monitor.name
+end
+
+function M.number(monitor)
+  return digits[key_of(monitor)]
+end
+
 local function monitors_by_position()
   local list = {}
   for _, monitor in ipairs(hl.get_monitors()) do
@@ -109,11 +156,22 @@ end
 local function assign_digits(monitors)
   local changed = false
 
+  -- Earlier versions remembered output names; carry those numbers over to the
+  -- description of the screen that has the name now.
+  for _, monitor in ipairs(monitors) do
+    local key = key_of(monitor)
+    if key ~= monitor.name and not digits[key] and digits[monitor.name] then
+      digits[key] = digits[monitor.name]
+      digits[monitor.name] = nil
+      changed = true
+    end
+  end
+
   -- A completely different set of screens (another desk, a new GPU) starts
   -- numbering from 1 again instead of inheriting stale numbers.
   local known = false
   for _, monitor in ipairs(monitors) do
-    if digits[monitor.name] then known = true end
+    if digits[key_of(monitor)] then known = true end
   end
   if not known and next(digits) ~= nil then
     digits = {}
@@ -124,10 +182,10 @@ local function assign_digits(monitors)
   for _, digit in pairs(digits) do used[digit] = true end
 
   for _, monitor in ipairs(monitors) do
-    if not digits[monitor.name] then
+    if not digits[key_of(monitor)] then
       for digit = 1, MAX_MONITORS do
         if not used[digit] then
-          digits[monitor.name] = digit
+          digits[key_of(monitor)] = digit
           used[digit] = true
           changed = true
           break
@@ -143,7 +201,7 @@ end
 -- monitor can only be switched without stealing focus to a workspace that
 -- already exists.
 local function ensure_rules(monitor)
-  local digit = digits[monitor.name]
+  local digit = M.number(monitor)
   if not digit then return end
 
   local existing = rules[monitor.name]
@@ -184,6 +242,7 @@ local function prepare(runtime)
   local monitors = monitors_by_position()
   if #monitors == 0 then return nil end
 
+  note_descriptions(monitors)
   assign_digits(monitors)
   for _, monitor in ipairs(monitors) do ensure_rules(monitor) end
 
@@ -199,7 +258,7 @@ end
 local function normalize(monitors)
   local home = {}
   for _, monitor in ipairs(monitors) do
-    local digit = digits[monitor.name]
+    local digit = M.number(monitor)
     if digit then home[digit] = monitor.name end
   end
 
@@ -222,7 +281,7 @@ local function remember(desktop)
 end
 
 local function show(monitor, desktop)
-  local digit = digits[monitor.name]
+  local digit = M.number(monitor)
   if not digit then return end
 
   local id = M.workspace_id(desktop, digit)
@@ -260,12 +319,14 @@ function M.switch(desktop)
 
   -- The focused monitor goes last, through the normal dispatcher, so focus
   -- and the cursor land exactly where they would on a single screen.
-  local digit = focused_name and digits[focused_name]
+  local digit = focused and M.number(focused)
   if digit then
     local id = M.workspace_id(desktop, digit)
     local active = focused.active_workspace
     if not (active and active.id == id) then
-      hl.dispatch(hl.dsp.focus({ workspace = tostring(id) }))
+      busy = true
+      pcall(hl.dispatch, hl.dsp.focus({ workspace = tostring(id) }))
+      busy = false
     end
   end
 
@@ -312,7 +373,7 @@ function M.move_window(desktop, follow)
   if not window then return end
 
   local monitor = window.monitor
-  local digit = monitor and digits[monitor.name]
+  local digit = monitor and M.number(monitor)
   if not digit then return end
 
   local id = M.workspace_id(desktop, digit)
@@ -330,12 +391,12 @@ end
 -- monitor, keeping each on its own desktop.
 function M.gather()
   local focused = hl.get_active_monitor()
-  local digit = focused and digits[focused.name]
+  local digit = focused and M.number(focused)
   if not digit then return end
 
   local present = {}
   for _, monitor in ipairs(hl.get_monitors()) do
-    local monitor_digit = digits[monitor.name]
+    local monitor_digit = M.number(monitor)
     if monitor_digit then present[monitor_digit] = true end
   end
 
@@ -366,17 +427,17 @@ end
 function M.adopt()
   local present = {}
   for _, monitor in ipairs(hl.get_monitors()) do
-    local digit = digits[monitor.name]
+    local digit = M.number(monitor)
     if digit then present[digit] = true end
   end
 
   local focused = hl.get_active_monitor()
-  local fallback = focused and digits[focused.name]
+  local fallback = focused and M.number(focused)
 
   for _, window in ipairs(hl.get_windows()) do
     local workspace = window.workspace
     local desktop = workspace and adopted_desktop(workspace.id, present)
-    local digit = window.monitor and digits[window.monitor.name] or fallback
+    local digit = window.monitor and M.number(window.monitor) or fallback
 
     if desktop and digit then
       hl.dispatch(hl.dsp.window.move({
@@ -388,16 +449,70 @@ function M.adopt()
   end
 end
 
--- Undo the numbering before uninstalling: desktop N becomes stock workspace
--- N (desktop 0 becomes workspace 10), so no window is left out of reach.
-function M.flatten()
+local function stock_of(desktop)
+  return desktop == 0 and 10 or desktop
+end
+
+-- Undo the numbering before uninstalling or switching off: desktop N becomes
+-- stock workspace N (desktop 0 becomes workspace 10), so no window is left out
+-- of reach, and the focused monitor shows the desktop you were on. With
+-- `onto` (a monitor name), those workspaces are gathered onto that monitor.
+function M.flatten(onto)
+  local desktop_now = M.current()
+
+  -- Work out every target first: moving one window of a group moves the
+  -- whole group, and a window already on workspace 3 would read as desktop 0.
+  local moves = {}
   for _, window in ipairs(hl.get_windows()) do
     local desktop = M.desktop_of(window.workspace and window.workspace.id)
-    if desktop then
-      local target = desktop == 0 and 10 or desktop
-      if window.workspace.id ~= target then
-        hl.dispatch(hl.dsp.window.move({ window = window, workspace = tostring(target), follow = false }))
+    if desktop then moves[#moves + 1] = { window = window, target = stock_of(desktop) } end
+  end
+
+  busy = true
+  local targets = {}
+  for _, move in ipairs(moves) do
+    targets[move.target] = true
+    if move.window.workspace.id ~= move.target then
+      hl.dispatch(hl.dsp.window.move({ window = move.window, workspace = tostring(move.target), follow = false }))
+    end
+  end
+
+  if onto then
+    for _, workspace in ipairs(hl.get_workspaces()) do
+      if targets[workspace.id] and workspace.monitor and workspace.monitor.name ~= onto then
+        pcall(hl.dispatch, hl.dsp.workspace.move({ workspace = tostring(workspace.id), monitor = onto }))
       end
+    end
+  end
+
+  pcall(hl.dispatch, hl.dsp.focus({ workspace = tostring(stock_of(desktop_now)) }))
+  busy = false
+end
+
+-- The reverse, after `setup on`: a window on stock workspace N (10 for 0)
+-- goes to desktop N on the monitor it was on. `screens` maps window address
+-- to that monitor's name, as `setup on` wrote it down before the reload (by
+-- now the workspace rules may have moved stock workspaces between monitors).
+function M.unflatten(screens)
+  screens = screens or {}
+  local by_name = {}
+  for _, monitor in ipairs(hl.get_monitors()) do by_name[monitor.name] = monitor end
+  local focused = hl.get_active_monitor()
+  local fallback = focused and M.number(focused)
+
+  local moves = {}
+  for _, window in ipairs(hl.get_windows()) do
+    local id = window.workspace and window.workspace.id
+    local monitor = by_name[screens[window.address] or ""] or window.monitor
+    local digit = monitor and M.number(monitor) or fallback
+    if id and id >= 1 and id <= 10 and digit then
+      moves[#moves + 1] = { window = window, target = M.workspace_id(id % 10, digit) }
+    end
+  end
+
+  for _, move in ipairs(moves) do
+    if move.window.workspace.id ~= move.target then
+      hl.dispatch(hl.dsp.window.move({ window = move.window, workspace = tostring(move.target), follow = false }))
     end
   end
 end
@@ -406,7 +521,9 @@ end
 -- them in monitors.lua.
 function M.renumber()
   digits = {}
-  assign_digits(monitors_by_position())
+  local monitors = monitors_by_position()
+  note_descriptions(monitors)
+  assign_digits(monitors)
   hl.exec_cmd("hyprctl reload")
 end
 
@@ -415,7 +532,7 @@ function M.status()
   for _, monitor in ipairs(monitors_by_position()) do
     local active = monitor.active_workspace
     lines[#lines + 1] = string.format("%s: monitor %s, workspace %s",
-      monitor.name, digits[monitor.name] or "-", active and active.id or "-")
+      monitor.name, M.number(monitor) or "-", active and active.id or "-")
   end
   lines[#lines + 1] = "desktop " .. M.current()
   return table.concat(lines, "\n")
@@ -479,6 +596,21 @@ if LIVE then
     local focused_name = focused and focused.name
 
     busy = true
+    -- Just switched back on: stock workspace N is desktop N again.
+    local resume = io.open(RESUME_FILE, "r")
+    if resume then
+      local screens, shown = {}, nil
+      for line in resume:lines() do
+        local address, name = line:match("^(%S+) (%S+)$")
+        if address == "showing" then shown = tonumber(name) elseif address then screens[address] = name end
+      end
+      resume:close()
+      os.remove(RESUME_FILE)
+      local active = focused and focused.active_workspace
+      shown = shown or (active and active.id)
+      if shown and shown >= 1 and shown <= 10 then desktop = shown % 10 end
+      pcall(M.unflatten, screens)
+    end
     pcall(normalize, monitors)
     busy = false
 
@@ -506,8 +638,20 @@ if LIVE then
     if started then refresh() end
   end)
 
+  -- Unplugging a screen makes Hyprland show each of its workspaces in turn,
+  -- in one burst just before "monitor.removed"; afterwards, go back to the
+  -- desktop from before the burst.
+  local before_burst = nil
+  local function note_burst()
+    if before_burst ~= nil then return end
+    before_burst = current_desktop or false
+    hl.timer(function() before_burst = nil end, { timeout = 250, type = "oneshot" })
+  end
+
   hl.on("monitor.removed", function()
     release_missing_monitors()
+    local desktop = before_burst or current_desktop
+    if started and desktop then pcall(M.switch, desktop) end
   end)
 
   -- Anything that changes one monitor's workspace (the stock bar, a window
@@ -515,8 +659,15 @@ if LIVE then
   hl.on("workspace.active", function(workspace)
     if busy or not workspace then return end
 
-    local desktop = M.desktop_of(workspace.id)
+    local desktop, digit = M.desktop_of(workspace.id)
     if not desktop then return end
+
+    -- A workspace shown on a screen it doesn't belong to was parked there by
+    -- Hyprland (a screen going away), not chosen.
+    local monitor = workspace.monitor
+    if monitor and M.number(monitor) and M.number(monitor) ~= digit then return end
+
+    note_burst()
 
     remember(desktop)
     sync(desktop, workspace.monitor and workspace.monitor.name)
