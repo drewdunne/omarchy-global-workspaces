@@ -141,8 +141,11 @@ end
 
 local function monitors_by_position()
   local list = {}
+  -- FALLBACK is Hyprland's stand-in while no screen is connected (a docked
+  -- laptop with its lid shut, unplugged); numbering it would forget the
+  -- real screens.
   for _, monitor in ipairs(hl.get_monitors()) do
-    if not monitor.is_mirror then list[#list + 1] = monitor end
+    if not monitor.is_mirror and monitor.name ~= "FALLBACK" then list[#list + 1] = monitor end
   end
 
   table.sort(list, function(a, b)

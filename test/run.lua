@@ -839,5 +839,20 @@ test("switching back on uses the screens written down before the reload", functi
   check(M.current() == 3, "on desktop 3, got " .. M.current())
 end)
 
+test("Hyprland's stand-in screen does not wipe the saved numbers", function()
+  local env, api = fake_hyprland()
+  desk(env)
+  load_module(api)
+  env.emit("config.reloaded")
+
+  local env2, api2 = fake_hyprland()
+  env2.add_monitor("FALLBACK", 0, 0, 1)
+  load_module(api2)
+  env2.emit("config.reloaded")
+
+  local saved = read_file(state_home .. "/omarchy/global-workspaces/monitors")
+  check(saved == "DP-1=3\nDP-2=1\nHDMI-A-1=2\n", "state file was " .. tostring(saved))
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)
